@@ -7,39 +7,46 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)
 
-# Global variables for the loaded brain
+# Global variables
 model = None
 scaler = None
 le_state = None
 le_sector = None
 model_std_dev = 0.4
+model_ready = False
 
 def load_model():
-    global model, scaler, le_state, le_sector, model_std_dev
+    global model, scaler, le_state, le_sector, model_std_dev, model_ready
     try:
+        # These filenames MUST match what you uploaded to GitHub
         model = joblib.load('trained_model.pkl')
         scaler = joblib.load('scaler.pkl')
         assets = joblib.load('encoders.pkl')
+        
         le_state = assets['le_state']
         le_sector = assets['le_sector']
         model_std_dev = assets.get('std_dev', 0.4)
+        
         print("🚀 Model loaded. System online.")
-        return True
+        model_ready = True
     except Exception as e:
         print(f"❌ ERROR: Could not load model files: {e}")
-        return False
+        model_ready = False
 
-# Initialize the load
-model_ready = load_model()
+# Run the loader
+load_model()
 
 @app.route('/', methods=['GET', 'HEAD'])
 def home():
-    return jsonify({"status": "live", "model_ready": model_ready})
+    return jsonify({
+        "status": "online" if model_ready else "error",
+        "model_loaded": model_ready
+    })
 
 @app.route('/predict', methods=['POST'])
 def predict():
     if not model_ready:
-        return jsonify({'error': 'Model failed to load on server. Check logs.'}), 500
+        return jsonify({'error': 'Backend model is not loaded. Check server logs for NumPy version errors.'}), 500
         
     try:
         data = request.json
@@ -48,9 +55,9 @@ def predict():
         start_year = int(data.get('year'))
         start_month = int(data.get('month'))
 
-        # Check if state/sector exists in our loaded encoders
+        # Validation
         if input_state not in le_state.classes_ or input_sector not in le_sector.classes_:
-            return jsonify({'error': f'Unknown Location: {input_state}'}), 400
+            return jsonify({'error': f'Invalid State/Sector: {input_state}'}), 400
 
         state_code = le_state.transform([input_state])[0]
         sector_code = le_sector.transform([input_sector])[0]
@@ -62,14 +69,14 @@ def predict():
             raw_input = np.array([[cy, cm, state_code, sector_code]])
             scaled_input = scaler.transform(raw_input)
             
+            # Predict
             base_pred = model.predict(scaled_input)[0]
-            # Gaussian variation for realism
             variation = np.random.normal(0, model_std_dev * 0.3)
             final_price = max(0.01, base_pred + variation)
 
             predictions.append({
-                'month': cm, 
-                'year': cy, 
+                'month': cm,
+                'year': cy,
                 'price': round(float(final_price), 2)
             })
 
