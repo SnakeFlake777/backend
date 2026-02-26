@@ -13,12 +13,20 @@ app = Flask(__name__)
 CORS(app)
 
 # ==========================================
-# 1. LOAD DATA & PREPARE ENCODERS
+# 1. SETUP & DATA LOADING
 # ==========================================
 print("Initializing API and loading data...")
 
-# Try to load the CSV. In a hosted environment, the CSV should be in the same folder.
+MODEL_FILE = 'trained_model.pkl'
+SCALER_FILE = 'scaler.pkl'
+ENCODER_FILE = 'encoders.pkl'
 csv_path = 'sigma.csv'
+
+# Initialize global-level placeholders
+le_state = LabelEncoder()
+le_sector = LabelEncoder()
+scaler = StandardScaler()
+model_std_dev = 0.4 # Default fallback
 
 try:
     if not os.path.exists(csv_path):
@@ -27,58 +35,72 @@ try:
     print("✅ Data loaded successfully from CSV.")
 except FileNotFoundError:
     print("⚠️ WARNING: CSV not found. Using fallback synthetic data.")
-    # Fallback data to ensure the server doesn't crash if the file is missing
     data = {
         'year': [2020]*5 + [2021]*5,
         'month': [1, 2, 3, 4, 5]*2,
-        'stateDescription': ['Alabama']*10,
+        'stateDescription': ['alabama']*10,
         'sectorName': ['residential']*10,
         'price': [12.5, 12.7, 12.6, 12.9, 13.0, 13.1, 13.2, 13.5, 13.3, 13.6]
     }
     df = pd.DataFrame(data)
 
-# Initialize Encoders and Scaler
-le_state = LabelEncoder()
-le_sector = LabelEncoder()
-scaler = StandardScaler()
-
-# Clean and encode the categorical data
-df['state_encoded'] = le_state.fit_transform(df['stateDescription'].astype(str).str.strip().str.lower())
-df['sector_encoded'] = le_sector.fit_transform(df['sectorName'].astype(str).str.strip().str.lower())
-
-# Define Features (X) and Target (y)
-X = df[['year', 'month', 'state_encoded', 'sector_encoded']]
-y = df['price']
-
-# Scale the inputs (Absolutely required for Neural Networks)
-X_scaled = scaler.fit_transform(X)
+# Normalize strings for encoding
+df['stateDescription'] = df['stateDescription'].astype(str).str.strip().str.lower()
+df['sectorName'] = df['sectorName'].astype(str).str.strip().str.lower()
 
 # ==========================================
-# 2. TRAIN THE DEEP LEARNING MODEL
+# 2. MODEL PERSISTENCE LOGIC
 # ==========================================
-MODEL_FILE = 'trained_model.pkl'
-SCALER_FILE = 'scaler.pkl'
-ENCODER_FILE = 'encoders.pkl'
-
 if os.path.exists(MODEL_FILE):
-    print("🚀 Loading pre-trained model from disk...")
+    print("🚀 Loading pre-trained model and assets from disk...")
     model = joblib.load(MODEL_FILE)
     scaler = joblib.load(SCALER_FILE)
-    encoders = joblib.load(ENCODER_FILE)
-    le_state = encoders['state']
-    le_sector = encoders['sector']
-    # We still need the model_std_dev for variation
-    # (You can also save this to the dict if you want to be perfect)
-    model_std_dev = 0.5 
-else:
-    print("🧠 No saved model found. Training now (this may take a minute)...")
-    # ... (Keep your existing training code here) ...
     
-    # After model.fit(), save everything:
+    # Load encoders and std_dev from the saved dictionary
+    saved_assets = joblib.load(ENCODER_FILE)
+    le_state = saved_assets['le_state']
+    le_sector = saved_assets['le_sector']
+    model_std_dev = saved_assets.get('std_dev', 0.4)
+    print("✅ Assets loaded successfully.")
+else:
+    print("🧠 No saved model found. Starting Deep Learning training...")
+    
+    # Fit and Transform encoders
+    df['state_encoded'] = le_state.fit_transform(df['stateDescription'])
+    df['sector_encoded'] = le_sector.fit_transform(df['sectorName'])
+    
+    X = df[['year', 'month', 'state_encoded', 'sector_encoded']]
+    y = df['price']
+    
+    # Fit and Transform scaler
+    X_scaled = scaler.fit_transform(X)
+
+    # Define the Model (Prevents NameError)
+    model = MLPRegressor(
+        hidden_layer_sizes=(100, 50, 25), 
+        activation='relu', 
+        solver='adam', 
+        max_iter=1500, 
+        random_state=42
+    )
+
+    # Train
+    model.fit(X_scaled, y)
+    
+    # Calculate error for variation logic
+    preds = model.predict(X_scaled)
+    model_std_dev = np.sqrt(mean_squared_error(y, preds))
+
+    # Save to disk
     joblib.dump(model, MODEL_FILE)
     joblib.dump(scaler, SCALER_FILE)
-    joblib.dump({'state': le_state, 'sector': le_sector}, ENCODER_FILE)
-    print("✅ Model trained and saved to disk!")
+    joblib.dump({
+        'le_state': le_state, 
+        'le_sector': le_sector, 
+        'std_dev': model_std_dev
+    }, ENCODER_FILE)
+    
+    print(f"✅ Training complete. Model saved.")
 
 # ==========================================
 # 3. DEFINE API ROUTES
