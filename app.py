@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
+import joblib
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from sklearn.neural_network import MLPRegressor
@@ -55,22 +56,29 @@ X_scaled = scaler.fit_transform(X)
 # ==========================================
 # 2. TRAIN THE DEEP LEARNING MODEL
 # ==========================================
-print("🧠 Training Deep Neural Network (MLP)...")
-# 3 hidden layers with 100, 50, and 25 neurons
-model = MLPRegressor(
-    hidden_layer_sizes=(100, 50, 25), 
-    activation='relu', 
-    solver='adam', 
-    max_iter=1500, 
-    random_state=42
-)
-model.fit(X_scaled, y)
-print("✅ Model trained successfully!")
+MODEL_FILE = 'trained_model.pkl'
+SCALER_FILE = 'scaler.pkl'
+ENCODER_FILE = 'encoders.pkl'
 
-# Calculate base variance/error to use for our realistic prediction fluctuations
-predictions_on_train = model.predict(X_scaled)
-mse = mean_squared_error(y, predictions_on_train)
-model_std_dev = np.sqrt(mse) 
+if os.path.exists(MODEL_FILE):
+    print("🚀 Loading pre-trained model from disk...")
+    model = joblib.load(MODEL_FILE)
+    scaler = joblib.load(SCALER_FILE)
+    encoders = joblib.load(ENCODER_FILE)
+    le_state = encoders['state']
+    le_sector = encoders['sector']
+    # We still need the model_std_dev for variation
+    # (You can also save this to the dict if you want to be perfect)
+    model_std_dev = 0.5 
+else:
+    print("🧠 No saved model found. Training now (this may take a minute)...")
+    # ... (Keep your existing training code here) ...
+    
+    # After model.fit(), save everything:
+    joblib.dump(model, MODEL_FILE)
+    joblib.dump(scaler, SCALER_FILE)
+    joblib.dump({'state': le_state, 'sector': le_sector}, ENCODER_FILE)
+    print("✅ Model trained and saved to disk!")
 
 # ==========================================
 # 3. DEFINE API ROUTES
